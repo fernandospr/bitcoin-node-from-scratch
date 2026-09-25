@@ -17,7 +17,7 @@ func NewHeader(magic uint32, command string, payload []byte) Header {
 		Magic:    magic,
 		Command:  command,
 		Length:   uint32(len(payload)),
-		Checksum: checksum(payload),
+		Checksum: Checksum(payload),
 	}
 }
 
@@ -54,7 +54,7 @@ func (h Header) Serialize(w *ByteWriter) {
 }
 
 func (h Header) ChecksumString() string {
-	return "0x" + hex.EncodeToString(h.Checksum[:])
+	return HexToString(h.Checksum[:])
 }
 
 func (h Header) String() string {
@@ -67,7 +67,11 @@ func (h Header) String() string {
 	)
 }
 
-func checksum(data []byte) [4]byte {
+func HexToString(data []byte) string {
+	return "0x" + hex.EncodeToString(data)
+}
+
+func Checksum(data []byte) [4]byte {
 	hash := DoubleSha256(data)
 
 	var result [4]byte

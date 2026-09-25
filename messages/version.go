@@ -43,7 +43,7 @@ func NewVersionPayload(
 	height int32,
 	relay bool,
 ) (VersionPayload, error) {
-	nonce, err := randomNonce()
+	nonce, err := RandomNonce()
 	if err != nil {
 		return VersionPayload{}, fmt.Errorf("generate version nonce: %w", err)
 	}
@@ -123,7 +123,7 @@ func (p VersionPayload) Serialize(w *ByteWriter) {
 	w.WriteBool(p.Relay)
 }
 
-func randomNonce() (uint64, error) {
+func RandomNonce() (uint64, error) {
 	var nonce uint64
 
 	if err := binary.Read(rand.Reader, binary.LittleEndian, &nonce); err != nil {
