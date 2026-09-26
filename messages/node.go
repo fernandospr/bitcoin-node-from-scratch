@@ -39,30 +39,31 @@ func connectToPeer(pa PeerAddress) {
 
 	defer conn.Close()
 
-	peer := Peer{
+	p := Peer{
 		Server: server,
 		Conn:   conn,
 	}
 
-	peer.log("Starting handshake...")
-
-	if err := peer.handshake(); err != nil {
-		peer.log(
+	p.log("Starting handshake...")
+	if err := p.handshake(); err != nil {
+		p.log(
 			"Handshake failed: %s",
 			err,
 		)
 		return
 	}
 
-	peer.log("Handshake success! ✅")
+	p.log("Handshake success! ✅")
 
-	peer.log("Starting message loop...")
+	p.log("Getting addresses...")
+	p.sendGetaddr()
 
-	if err := peer.messageLoop(); err != nil {
+	p.log("Starting message loop...")
+	if err := p.messageLoop(); err != nil {
 		if errors.Is(err, io.EOF) {
-			peer.log("Peer closed the connection")
+			p.log("Peer closed the connection")
 		} else {
-			peer.log(
+			p.log(
 				"Message loop ended: %s",
 				err,
 			)

@@ -35,11 +35,34 @@ func BuildVersionMessage(ip string, port uint16) (Message, error) {
 }
 
 func BuildVerackMessage() (Message, error) {
-	message, err := NewVerAckMessage(
+	message, err := NewVerackMessage(
 		MainnetMagic,
 	)
 	if err != nil {
 		return Message{}, fmt.Errorf("error creating verack message: %s", err)
+	}
+
+	return message, nil
+}
+
+func BuildGetaddrMessage() (Message, error) {
+	message, err := NewGetaddrMessage(
+		MainnetMagic,
+	)
+	if err != nil {
+		return Message{}, fmt.Errorf("error creating getaddr message: %s", err)
+	}
+
+	return message, nil
+}
+
+func BuildAddrMessage(items []AddrItemPayload) (Message, error) {
+	message, err := NewAddrMessage(
+		MainnetMagic,
+		items,
+	)
+	if err != nil {
+		return Message{}, fmt.Errorf("error creating addr message: %s", err)
 	}
 
 	return message, nil

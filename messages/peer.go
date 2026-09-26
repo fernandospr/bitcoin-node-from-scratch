@@ -266,6 +266,38 @@ func (p *Peer) handlePong(message Message) error {
 	return nil
 }
 
+func (p *Peer) handleAddr(message Message) error {
+	payload, ok := message.Payload.(AddrPayload)
+	if !ok {
+		return fmt.Errorf("invalid addr payload")
+	}
+	p.log("addr payload: %s", payload)
+	// TODO Save payload.Addresses
+
+	return nil
+}
+
+func (p *Peer) handleGetaddr(message Message) error {
+	// TODO Build items with known addresses
+	items := []AddrItemPayload{}
+	message, err := BuildAddrMessage(items)
+	if err != nil {
+		return fmt.Errorf(
+			"build addr message: %w",
+			err,
+		)
+	}
+
+	if err := p.sendMessage(message); err != nil {
+		return fmt.Errorf(
+			"send addr message: %w",
+			err,
+		)
+	}
+
+	return nil
+}
+
 func (p *Peer) readMessage() (Message, error) {
 	for {
 		headerBytes := make([]byte, 24)
@@ -350,6 +382,12 @@ func (p *Peer) handleMessage(message Message) error {
 	case "pong":
 		return p.handlePong(message)
 
+	case "getaddr":
+		return p.handleGetaddr(message)
+
+	case "addr":
+		return p.handleAddr(message)
+
 	case "version":
 		p.log("Unexpected version message")
 
@@ -388,6 +426,22 @@ func (p *Peer) sendPing() error {
 	}
 
 	p.PingNonce = nonce
+
+	return nil
+}
+
+func (p *Peer) sendGetaddr() error {
+	message, err := BuildGetaddrMessage()
+	if err != nil {
+		return fmt.Errorf(
+			"build getaddr message: %w",
+			err,
+		)
+	}
+
+	if err := p.sendMessage(message); err != nil {
+		return err
+	}
 
 	return nil
 }
