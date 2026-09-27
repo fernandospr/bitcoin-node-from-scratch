@@ -9,10 +9,18 @@ import (
 	"time"
 )
 
+type PeerDirection string
+
+const (
+	Inbound  PeerDirection = "IN"
+	Outbound PeerDirection = "OUT"
+)
+
 type Peer struct {
-	Server    string
+	Address   string
 	Conn      net.Conn
 	PingNonce uint64
+	Direction PeerDirection
 }
 
 const maxPayloadSize = 4 * 1024 * 1024
@@ -20,17 +28,45 @@ const pingInterval = 1 * time.Minute
 
 func (p *Peer) log(format string, args ...any) {
 	fmt.Printf(
-		"[%s] [%s] %s\n",
+		"[%s] [%s] [%s] %s\n",
 		time.Now().Format("2006-01-02 15:04:05.000"),
-		p.Server,
+		p.Direction,
+		p.Address,
 		fmt.Sprintf(format, args...),
 	)
+}
+
+func (p *Peer) run() {
+	defer p.Conn.Close()
+
+	p.log("Starting handshake...")
+	if err := p.handshake(); err != nil {
+		p.log("Handshake failed: %s", err)
+		return
+	}
+
+	p.log("Handshake success! ✅")
+
+	p.log("Getting addresses...")
+	if err := p.sendGetaddr(); err != nil {
+		p.log("Getaddr failed: %s", err)
+		return
+	}
+
+	p.log("Starting message loop...")
+	if err := p.messageLoop(); err != nil {
+		if errors.Is(err, io.EOF) {
+			p.log("Peer closed the connection")
+		} else {
+			p.log("Message loop ended: %s", err)
+		}
+	}
 }
 
 func (p *Peer) handshake() error {
 	p.log("Sending version message...")
 
-	ip, port, err := net.SplitHostPort(p.Server)
+	ip, port, err := net.SplitHostPort(p.Address)
 	if err != nil {
 		return fmt.Errorf("parse peer address: %w", err)
 	}

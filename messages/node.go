@@ -5,9 +5,7 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"sync"
@@ -22,7 +20,7 @@ type PeerAddress struct {
 func connectToPeer(pa PeerAddress) {
 	server := net.JoinHostPort(pa.IP, pa.Port)
 
-	fmt.Printf("[%s] Connecting... ", server)
+	fmt.Printf("[%s] Connecting...\n", server)
 
 	conn, err := net.DialTimeout(
 		"tcp",
@@ -30,47 +28,17 @@ func connectToPeer(pa PeerAddress) {
 		5*time.Second,
 	)
 	if err != nil {
-		fmt.Println("❌")
 		fmt.Printf("[%s] Connection error: %s\n", server, err)
 		return
 	}
 
-	fmt.Println("✅")
-
-	defer conn.Close()
-
 	p := Peer{
-		Server: server,
-		Conn:   conn,
+		Address:   server,
+		Conn:      conn,
+		Direction: Outbound,
 	}
 
-	p.log("Starting handshake...")
-	if err := p.handshake(); err != nil {
-		p.log(
-			"Handshake failed: %s",
-			err,
-		)
-		return
-	}
-
-	p.log("Handshake success! ✅")
-
-	p.log("Getting addresses...")
-	p.sendGetaddr()
-
-	p.log("Starting message loop...")
-	if err := p.messageLoop(); err != nil {
-		if errors.Is(err, io.EOF) {
-			p.log("Peer closed the connection")
-		} else {
-			p.log(
-				"Message loop ended: %s",
-				err,
-			)
-		}
-
-		return
-	}
+	p.run()
 }
 
 func connectToPeers(pas []PeerAddress) {
@@ -89,6 +57,66 @@ func connectToPeers(pas []PeerAddress) {
 	wg.Wait()
 }
 
+func buildPeerAddresses(args []string) []PeerAddress {
+	pas := make([]PeerAddress, 0, len(args))
+
+	for _, arg := range args {
+		ip, port, err := net.SplitHostPort(arg)
+		if err != nil {
+			fmt.Printf("Invalid peer address %q: %s\n", arg, err)
+			continue
+		}
+
+		pas = append(pas, PeerAddress{
+			IP:   ip,
+			Port: port,
+		})
+	}
+	return pas
+}
+
+func listenForPeers(port int) {
+	fmt.Printf("Listening on port %d...\n", port)
+
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		fmt.Printf(
+			"[%s] Error: %s\n",
+			time.Now().Format("2006-01-02 15:04:05.000"),
+			err,
+		)
+		return
+	}
+	defer listener.Close()
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			fmt.Printf(
+				"[%s] Accept error: %s\n",
+				time.Now().Format("2006-01-02 15:04:05.000"),
+				err,
+			)
+			continue
+		}
+
+		go acceptPeer(conn)
+	}
+}
+
+func acceptPeer(conn net.Conn) {
+	remote := conn.RemoteAddr()
+	fmt.Println("Client connected:", remote)
+
+	p := Peer{
+		Address:   remote.String(),
+		Conn:      conn,
+		Direction: Inbound,
+	}
+
+	p.run()
+}
+
 func printUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  go run . <ip:port> [ip:port...]")
@@ -104,20 +132,11 @@ func main() {
 		printUsage()
 		os.Exit(1)
 	}
-	pas := make([]PeerAddress, 0, len(args))
 
-	for _, arg := range args {
-		ip, port, err := net.SplitHostPort(arg)
-		if err != nil {
-			fmt.Printf("Invalid peer address %q: %s\n", arg, err)
-			os.Exit(1)
-		}
+	go listenForPeers(8333)
 
-		pas = append(pas, PeerAddress{
-			IP:   ip,
-			Port: port,
-		})
+	pas := buildPeerAddresses(args)
+	if len(pas) > 0 {
+		connectToPeers(pas)
 	}
-
-	connectToPeers(pas)
 }
