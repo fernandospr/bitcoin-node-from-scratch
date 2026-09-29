@@ -11,16 +11,19 @@ import (
 
 type PeerDirection string
 
+const maxAddrToSend = 1000
+
 const (
 	Inbound  PeerDirection = "IN"
 	Outbound PeerDirection = "OUT"
 )
 
 type Peer struct {
-	Address   string
-	Conn      net.Conn
-	PingNonce uint64
-	Direction PeerDirection
+	Address        string
+	Conn           net.Conn
+	PingNonce      uint64
+	Direction      PeerDirection
+	AddressManager *AddressManager
 }
 
 const maxPayloadSize = 4 * 1024 * 1024
@@ -45,7 +48,7 @@ func (p *Peer) run() {
 		return
 	}
 
-	p.log("Handshake success! ✅")
+	p.log("Handshake success!")
 
 	p.log("Getting addresses...")
 	if err := p.sendGetaddr(); err != nil {
@@ -90,7 +93,7 @@ func (p *Peer) handshake() error {
 		)
 	}
 
-	p.log("Version sent ✅")
+	p.log("Version sent")
 
 	receivedVersion := false
 	receivedVerack := false
@@ -140,7 +143,7 @@ func (p *Peer) handshake() error {
 					)
 				}
 
-				p.log("Verack sent ✅")
+				p.log("Verack sent")
 
 				sentVerack = true
 			}
@@ -295,7 +298,7 @@ func (p *Peer) handlePong(message Message) error {
 		)
 	}
 
-	p.log("Pong matches our ping! ✅")
+	p.log("Pong matches our ping!")
 
 	p.PingNonce = 0
 
@@ -308,14 +311,43 @@ func (p *Peer) handleAddr(message Message) error {
 		return fmt.Errorf("invalid addr payload")
 	}
 	p.log("addr payload: %s", payload)
-	// TODO Save payload.Addresses
+
+	for _, a := range payload.Addresses {
+		ip := a.Address.IPString()
+		port := a.Address.Port
+		p.AddressManager.Add(PeerAddress{
+			ip,
+			strconv.Itoa(int(port)),
+			// TODO: Save Time and Services
+		})
+	}
 
 	return nil
 }
 
 func (p *Peer) handleGetaddr(message Message) error {
-	// TODO Build items with known addresses
-	items := []AddrItemPayload{}
+	addresses := p.AddressManager.RandomSample(maxAddrToSend)
+
+	items := make([]AddrItemPayload, 0, len(addresses))
+	for _, address := range addresses {
+		portInt, err := strconv.ParseUint(address.Port, 10, 16)
+		if err != nil {
+			return err
+		}
+		na, err := NewNetworkAddress(
+			0, // TODO: Send Services learnt from other nodes
+			address.IP,
+			uint16(portInt),
+		)
+		if err != nil {
+			return err
+		}
+		items = append(items, AddrItemPayload{
+			Time:    uint32(time.Now().Unix()), // TODO: Send Time learnt from other nodes
+			Address: na,
+		})
+	}
+
 	message, err := BuildAddrMessage(items)
 	if err != nil {
 		return fmt.Errorf(
