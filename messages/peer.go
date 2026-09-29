@@ -9,10 +9,21 @@ import (
 	"time"
 )
 
+type PeerDirection string
+
+const maxAddrToSend = 1000
+
+const (
+	Inbound  PeerDirection = "IN"
+	Outbound PeerDirection = "OUT"
+)
+
 type Peer struct {
-	Server    string
-	Conn      net.Conn
-	PingNonce uint64
+	Address        string
+	Conn           net.Conn
+	PingNonce      uint64
+	Direction      PeerDirection
+	AddressManager *AddressManager
 }
 
 const maxPayloadSize = 4 * 1024 * 1024
@@ -20,17 +31,45 @@ const pingInterval = 1 * time.Minute
 
 func (p *Peer) log(format string, args ...any) {
 	fmt.Printf(
-		"[%s] [%s] %s\n",
+		"[%s] [%s] [%s] %s\n",
 		time.Now().Format("2006-01-02 15:04:05.000"),
-		p.Server,
+		p.Direction,
+		p.Address,
 		fmt.Sprintf(format, args...),
 	)
+}
+
+func (p *Peer) run() {
+	defer p.Conn.Close()
+
+	p.log("Starting handshake...")
+	if err := p.handshake(); err != nil {
+		p.log("Handshake failed: %s", err)
+		return
+	}
+
+	p.log("Handshake success!")
+
+	p.log("Getting addresses...")
+	if err := p.sendGetaddr(); err != nil {
+		p.log("Getaddr failed: %s", err)
+		return
+	}
+
+	p.log("Starting message loop...")
+	if err := p.messageLoop(); err != nil {
+		if errors.Is(err, io.EOF) {
+			p.log("Peer closed the connection")
+		} else {
+			p.log("Message loop ended: %s", err)
+		}
+	}
 }
 
 func (p *Peer) handshake() error {
 	p.log("Sending version message...")
 
-	ip, port, err := net.SplitHostPort(p.Server)
+	ip, port, err := net.SplitHostPort(p.Address)
 	if err != nil {
 		return fmt.Errorf("parse peer address: %w", err)
 	}
@@ -54,7 +93,7 @@ func (p *Peer) handshake() error {
 		)
 	}
 
-	p.log("Version sent ✅")
+	p.log("Version sent")
 
 	receivedVersion := false
 	receivedVerack := false
@@ -104,7 +143,7 @@ func (p *Peer) handshake() error {
 					)
 				}
 
-				p.log("Verack sent ✅")
+				p.log("Verack sent")
 
 				sentVerack = true
 			}
@@ -259,9 +298,70 @@ func (p *Peer) handlePong(message Message) error {
 		)
 	}
 
-	p.log("Pong matches our ping! ✅")
+	p.log("Pong matches our ping!")
 
 	p.PingNonce = 0
+
+	return nil
+}
+
+func (p *Peer) handleAddr(message Message) error {
+	payload, ok := message.Payload.(AddrPayload)
+	if !ok {
+		return fmt.Errorf("invalid addr payload")
+	}
+	p.log("addr payload: %s", payload)
+
+	for _, a := range payload.Addresses {
+		ip := a.Address.IPString()
+		port := a.Address.Port
+		p.AddressManager.Add(PeerAddress{
+			ip,
+			strconv.Itoa(int(port)),
+			// TODO: Save Time and Services
+		})
+	}
+
+	return nil
+}
+
+func (p *Peer) handleGetaddr(message Message) error {
+	addresses := p.AddressManager.RandomSample(maxAddrToSend)
+
+	items := make([]AddrItemPayload, 0, len(addresses))
+	for _, address := range addresses {
+		portInt, err := strconv.ParseUint(address.Port, 10, 16)
+		if err != nil {
+			return err
+		}
+		na, err := NewNetworkAddress(
+			0, // TODO: Send Services learnt from other nodes
+			address.IP,
+			uint16(portInt),
+		)
+		if err != nil {
+			return err
+		}
+		items = append(items, AddrItemPayload{
+			Time:    uint32(time.Now().Unix()), // TODO: Send Time learnt from other nodes
+			Address: na,
+		})
+	}
+
+	message, err := BuildAddrMessage(items)
+	if err != nil {
+		return fmt.Errorf(
+			"build addr message: %w",
+			err,
+		)
+	}
+
+	if err := p.sendMessage(message); err != nil {
+		return fmt.Errorf(
+			"send addr message: %w",
+			err,
+		)
+	}
 
 	return nil
 }
@@ -350,6 +450,12 @@ func (p *Peer) handleMessage(message Message) error {
 	case "pong":
 		return p.handlePong(message)
 
+	case "getaddr":
+		return p.handleGetaddr(message)
+
+	case "addr":
+		return p.handleAddr(message)
+
 	case "version":
 		p.log("Unexpected version message")
 
@@ -388,6 +494,22 @@ func (p *Peer) sendPing() error {
 	}
 
 	p.PingNonce = nonce
+
+	return nil
+}
+
+func (p *Peer) sendGetaddr() error {
+	message, err := BuildGetaddrMessage()
+	if err != nil {
+		return fmt.Errorf(
+			"build getaddr message: %w",
+			err,
+		)
+	}
+
+	if err := p.sendMessage(message); err != nil {
+		return err
+	}
 
 	return nil
 }

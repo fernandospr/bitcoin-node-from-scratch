@@ -75,7 +75,7 @@ func NewVersionMessage(
 	}, nil
 }
 
-func NewVerAckMessage(
+func NewVerackMessage(
 	magic uint32,
 ) (Message, error) {
 	header := NewHeader(
@@ -87,6 +87,48 @@ func NewVerAckMessage(
 		Header:  header,
 		Payload: nil,
 		payload: nil,
+	}, nil
+}
+
+func NewGetaddrMessage(
+	magic uint32,
+) (Message, error) {
+	header := NewHeader(
+		magic,
+		"getaddr",
+		nil,
+	)
+	return Message{
+		Header:  header,
+		Payload: nil,
+		payload: nil,
+	}, nil
+}
+
+func NewAddrMessage(
+	magic uint32,
+	items []AddrItemPayload,
+) (Message, error) {
+	payload, err := NewAddrPayload(
+		items,
+	)
+	if err != nil {
+		return Message{}, err
+	}
+
+	payloadWriter := NewByteWriter()
+	payload.Serialize(payloadWriter)
+	payloadBytes := payloadWriter.Bytes()
+
+	header := NewHeader(
+		magic,
+		"addr",
+		payloadBytes,
+	)
+	return Message{
+		Header:  header,
+		Payload: payload,
+		payload: payloadBytes,
 	}, nil
 }
 
@@ -165,6 +207,37 @@ func Deserialize(data []byte) (Message, error) {
 			payload: nil,
 		}, nil
 
+	case "getaddr":
+		payloadChecksum := Checksum(nil)
+		if header.Checksum != payloadChecksum {
+			return Message{}, fmt.Errorf("checksum mismatch. Header checksum is %s but checksum(payload) is %s", header.ChecksumString(), HexToString(payloadChecksum[:]))
+		}
+		return Message{
+			Header:  header,
+			Payload: nil,
+			payload: nil,
+		}, nil
+
+	case "addr":
+		payloadBytes, err := r.ReadBytes(int(header.Length))
+		if err != nil {
+			return Message{}, err
+		}
+		payloadChecksum := Checksum(payloadBytes)
+		if header.Checksum != payloadChecksum {
+			return Message{}, fmt.Errorf("checksum mismatch. Header checksum is %s but checksum(payload) is %s", header.ChecksumString(), HexToString(payloadChecksum[:]))
+		}
+		payloadReader := NewByteReader(payloadBytes)
+		payload, err := ReadAddrPayload(payloadReader)
+		if err != nil {
+			return Message{}, err
+		}
+		return Message{
+			Header:  header,
+			Payload: payload,
+			payload: payloadBytes,
+		}, nil
+
 	case "version":
 		payloadBytes, err := r.ReadBytes(int(header.Length))
 		if err != nil {
@@ -184,6 +257,7 @@ func Deserialize(data []byte) (Message, error) {
 			Payload: payload,
 			payload: payloadBytes,
 		}, nil
+
 	case "ping":
 		payloadBytes, err := r.ReadBytes(int(header.Length))
 		if err != nil {
@@ -203,6 +277,7 @@ func Deserialize(data []byte) (Message, error) {
 			Payload: payload,
 			payload: payloadBytes,
 		}, nil
+
 	case "pong":
 		payloadBytes, err := r.ReadBytes(int(header.Length))
 		if err != nil {

@@ -1,28 +1,216 @@
-// Bitcoin node that connects to multiple peers, performs handshakes, and handles ping/pong messages.
-//
-// Usage:
-// go run . ip1:port1 ip2:port2
 package main
 
 import (
-	"errors"
 	"fmt"
-	"io"
+	"math/rand/v2"
 	"net"
-	"os"
-	"sync"
 	"time"
 )
 
-type PeerAddress struct {
-	IP   string
-	Port string
+const addressSaveInterval = 1 * time.Minute
+const addressDatabasePath = "addresses.json"
+
+type Node struct {
+	addressManager *AddressManager
+
+	explicitOutboundPeers []PeerAddress
+	listenPort            string
+	maxOutboundPeers      int
 }
 
-func connectToPeer(pa PeerAddress) {
+func (n *Node) AddExplicitOutboundPeer(address string) error {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("invalid peer address: %w", err)
+	}
+
+	n.explicitOutboundPeers = append(
+		n.explicitOutboundPeers,
+		PeerAddress{
+			IP:   host,
+			Port: port,
+		},
+	)
+
+	return nil
+}
+
+func NewNode(config NodeConfig) *Node {
+	return &Node{
+		addressManager:        NewAddresssManager(),
+		listenPort:            config.ListenPort,
+		explicitOutboundPeers: config.ExplicitOutboundPeers,
+		maxOutboundPeers:      config.MaxOutboundPeers,
+	}
+}
+
+func (n *Node) Run() {
+	go n.listenForPeers(n.listenPort)
+	go n.connectToPeers()
+	go n.persistAddresses()
+
+	select {}
+}
+
+// Bootstrap
+
+func (n *Node) Bootstrap() {
+	fmt.Println("Bootstrapping node...")
+
+	loaded, err := n.addressManager.Load(addressDatabasePath)
+	if err != nil {
+		fmt.Printf(
+			"Failed to load address database: %s\n",
+			err,
+		)
+	} else {
+		fmt.Printf(
+			"Loaded %d known addresses\n",
+			loaded,
+		)
+
+		return
+	}
+
+	fmt.Println("Address database not found")
+	fmt.Println("Resolving DNS seeds...")
+
+	addresses := ResolveSeeds(MainnetSeeds)
+	n.addressManager.AddMany(addresses)
+
+	fmt.Printf("Discovered %d addresses from DNS seeds\n",
+		len(addresses),
+	)
+
+	saved, err := n.addressManager.Save(addressDatabasePath)
+	if err != nil {
+		fmt.Printf(
+			"Failed to save address database: %s\n",
+			err,
+		)
+		return
+	}
+
+	fmt.Printf(
+		"Saved %d addresses to %s\n",
+		saved,
+		addressDatabasePath,
+	)
+}
+
+// Inbound
+
+func (n *Node) listenForPeers(port string) {
+	fmt.Printf("Listening on port %s...\n", port)
+
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%s", port))
+	if err != nil {
+		fmt.Printf(
+			"Listening error: %s\n",
+			err,
+		)
+		return
+	}
+	defer listener.Close()
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			fmt.Printf(
+				"[%s] Accept error: %s\n",
+				time.Now().Format("2006-01-02 15:04:05.000"),
+				err,
+			)
+			continue
+		}
+
+		go n.acceptPeer(conn)
+	}
+}
+
+func (n *Node) acceptPeer(conn net.Conn) {
+	remote := conn.RemoteAddr()
+	fmt.Println("Client connected:", remote)
+
+	p := Peer{
+		Address:        remote.String(),
+		Conn:           conn,
+		Direction:      Inbound,
+		AddressManager: n.addressManager,
+	}
+
+	p.run()
+}
+
+// Outbound
+
+func (n *Node) connectToPeers() {
+	connected := 0
+
+	// 1. Explicit peers first.
+	for _, address := range n.explicitOutboundPeers {
+		if connected >= n.maxOutboundPeers {
+			break
+		}
+
+		if err := n.connectToPeer(address); err != nil {
+			fmt.Printf(
+				"[%s] Explicit connection failed: %s\n",
+				net.JoinHostPort(address.IP, address.Port),
+				err,
+			)
+			continue
+		}
+
+		connected++
+
+		fmt.Printf(
+			"Outbound peers: %d/%d\n",
+			connected,
+			n.maxOutboundPeers,
+		)
+	}
+
+	// 2. Fill remaining slots with discovered addresses.
+	if connected >= n.maxOutboundPeers {
+		return
+	}
+
+	candidates := n.addressManager.All()
+
+	rand.Shuffle(len(candidates), func(i, j int) {
+		candidates[i], candidates[j] =
+			candidates[j], candidates[i]
+	})
+
+	for _, address := range candidates {
+		if connected >= n.maxOutboundPeers {
+			break
+		}
+
+		if err := n.connectToPeer(address); err != nil {
+			fmt.Printf(
+				"[%s] Connection failed: %s\n",
+				net.JoinHostPort(address.IP, address.Port),
+				err,
+			)
+			continue
+		}
+
+		connected++
+
+		fmt.Printf(
+			"Outbound peers: %d/%d\n",
+			connected,
+			n.maxOutboundPeers,
+		)
+	}
+}
+
+func (n *Node) connectToPeer(pa PeerAddress) error {
 	server := net.JoinHostPort(pa.IP, pa.Port)
 
-	fmt.Printf("[%s] Connecting... ", server)
+	fmt.Printf("[%s] Connecting...\n", server)
 
 	conn, err := net.DialTimeout(
 		"tcp",
@@ -30,93 +218,49 @@ func connectToPeer(pa PeerAddress) {
 		5*time.Second,
 	)
 	if err != nil {
-		fmt.Println("❌")
-		fmt.Printf("[%s] Connection error: %s\n", server, err)
-		return
-	}
-
-	fmt.Println("✅")
-
-	defer conn.Close()
-
-	peer := Peer{
-		Server: server,
-		Conn:   conn,
-	}
-
-	peer.log("Starting handshake...")
-
-	if err := peer.handshake(); err != nil {
-		peer.log(
-			"Handshake failed: %s",
+		return fmt.Errorf(
+			"connection error: %w",
 			err,
 		)
-		return
 	}
 
-	peer.log("Handshake success! ✅")
+	fmt.Printf(
+		"[%s] TCP connection established\n",
+		server,
+	)
 
-	peer.log("Starting message loop...")
+	p := Peer{
+		Address:        server,
+		Conn:           conn,
+		Direction:      Outbound,
+		AddressManager: n.addressManager,
+	}
 
-	if err := peer.messageLoop(); err != nil {
-		if errors.Is(err, io.EOF) {
-			peer.log("Peer closed the connection")
-		} else {
-			peer.log(
-				"Message loop ended: %s",
+	go p.run()
+
+	return nil
+}
+
+// Address persistance
+
+func (n *Node) persistAddresses() {
+	ticker := time.NewTicker(addressSaveInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		saved, err := n.addressManager.Save(addressDatabasePath)
+		if err != nil {
+			fmt.Printf(
+				"Failed to save address database: %s\n",
 				err,
 			)
+			continue
 		}
 
-		return
+		fmt.Printf(
+			"Saved %d addresses to %s\n",
+			saved,
+			addressDatabasePath,
+		)
 	}
-}
-
-func connectToPeers(pas []PeerAddress) {
-	var wg sync.WaitGroup
-
-	for _, pa := range pas {
-		wg.Add(1)
-
-		go func(pa PeerAddress) {
-			defer wg.Done()
-
-			connectToPeer(pa)
-		}(pa)
-	}
-
-	wg.Wait()
-}
-
-func printUsage() {
-	fmt.Println("Usage:")
-	fmt.Println("  go run . <ip:port> [ip:port...]")
-	fmt.Println()
-	fmt.Println("Example:")
-	fmt.Println("  go run . 108.36.121.109:8333 176.126.71.51:8333")
-}
-
-func main() {
-	args := os.Args[1:]
-
-	if len(args) == 0 {
-		printUsage()
-		os.Exit(1)
-	}
-	pas := make([]PeerAddress, 0, len(args))
-
-	for _, arg := range args {
-		ip, port, err := net.SplitHostPort(arg)
-		if err != nil {
-			fmt.Printf("Invalid peer address %q: %s\n", arg, err)
-			os.Exit(1)
-		}
-
-		pas = append(pas, PeerAddress{
-			IP:   ip,
-			Port: port,
-		})
-	}
-
-	connectToPeers(pas)
 }
