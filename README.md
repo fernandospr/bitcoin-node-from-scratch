@@ -110,6 +110,9 @@ The project currently implements:
                                                          addresses.json
 
 
+## Requirements
+[Go 1.25.7](https://go.dev/dl/)
+
 ## Usage examples
 
 ### Show help
@@ -178,19 +181,19 @@ It then attempts to connect to 5.6.7.8:8333.
 The remaining slots are filled with discovered peers.
 
 
-### Testing locally:
-In two terminals execute:
+### Testing locally
+In one terminal execute:
 ```
 go run . -port 8334
 ```
-
+In other terminal execute:
 ```
 go run . -connect 127.0.0.1:8334 -max-outbound-peers 1
 ```
 
 ## Roadmap
 Possible next steps include:
-
+* Reorganize files/folders.
 * Concurrent outbound connection attempts.
 * Maintaining the configured number of outbound peers.
 * Reconnecting when a peer disconnects.
@@ -204,3 +207,10 @@ Possible next steps include:
 * Peer banning and misbehavior handling.
 * Graceful node shutdown.
 * More persistent peer metadata.
+
+## References
+https://developer.bitcoin.org/devguide/p2p_network.html
+
+https://learnmeabitcoin.com/technical/networking/
+
+https://en.bitcoin.it/wiki/Protocol_documentation
